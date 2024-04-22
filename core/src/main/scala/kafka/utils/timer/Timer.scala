@@ -70,6 +70,7 @@ class SystemTimer(executorName: String,
     if (bucket != null) {
       writeLock.lock()
       try {
+        // 若任务槽不为null，则不断循环(while保证了时间轮的不断推进)
         while (bucket != null) {
           // 更新每层时间轮的currentTime
           timingWheel.advanceClock(bucket.getExpiration)
