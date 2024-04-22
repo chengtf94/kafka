@@ -6,6 +6,7 @@ import java.util.concurrent.{DelayQueue, Executors, TimeUnit}
 
 import kafka.utils.threadsafe
 import org.apache.kafka.common.utils.{KafkaThread, Time}
+
 trait Timer {
 
   def add(timerTask: TimerTask): Unit
@@ -24,10 +25,9 @@ class SystemTimer(executorName: String,
                   wheelSize: Int = 20,
                   startMs: Long = Time.SYSTEM.hiResClockMs) extends Timer {
 
-  // timeout timer
+  /** 线程池、延迟队列、任务计数器、时间轮 */
   private[this] val taskExecutor = Executors.newFixedThreadPool(1,
     (runnable: Runnable) => KafkaThread.nonDaemon("executor-" + executorName, runnable))
-
   private[this] val delayQueue = new DelayQueue[TimerTaskList]()
   private[this] val taskCounter = new AtomicInteger(0)
   private[this] val timingWheel = new TimingWheel(
@@ -38,11 +38,13 @@ class SystemTimer(executorName: String,
     delayQueue
   )
 
+  /** 锁：当ticking时保护数据结构 */
   // Locks used to protect data structures while ticking
   private[this] val readWriteLock = new ReentrantReadWriteLock()
   private[this] val readLock = readWriteLock.readLock()
   private[this] val writeLock = readWriteLock.writeLock()
 
+  @Override
   def add(timerTask: TimerTask): Unit = {
     readLock.lock()
     try {
@@ -54,20 +56,26 @@ class SystemTimer(executorName: String,
 
   private def addTimerTaskEntry(timerTaskEntry: TimerTaskEntry): Unit = {
     if (!timingWheel.add(timerTaskEntry)) {
-      // Already expired or cancelled
-      if (!timerTaskEntry.cancelled)
+      if (!timerTaskEntry.cancelled) {
+        // 任务已到期且未取消，则执行该任务
         taskExecutor.submit(timerTaskEntry.timerTask)
+      }
     }
   }
 
+  @Override
   def advanceClock(timeoutMs: Long): Boolean = {
+    // 从延迟队列获取槽，阻塞等待直到timeoutMs超时或堆顶任务到期
     var bucket = delayQueue.poll(timeoutMs, TimeUnit.MILLISECONDS)
     if (bucket != null) {
       writeLock.lock()
       try {
         while (bucket != null) {
+          // 更新每层时间轮的currentTime
           timingWheel.advanceClock(bucket.getExpiration)
+          // 重新进行任务插入，以实现时间轮的降级
           bucket.flush(addTimerTaskEntry)
+          // 获取下一个槽
           bucket = delayQueue.poll()
         }
       } finally {
@@ -79,8 +87,10 @@ class SystemTimer(executorName: String,
     }
   }
 
+  @Override
   def size: Int = taskCounter.get
 
+  @Override
   override def shutdown(): Unit = {
     taskExecutor.shutdown()
   }

@@ -11,22 +11,15 @@ import scala.math._
 @threadsafe
 private[timer] class TimerTaskList(taskCounter: AtomicInteger) extends Delayed {
 
-  // TimerTaskList forms a doubly linked cyclic list using a dummy root entry
-  // root.next points to the head
-  // root.prev points to the tail
+  /** 双向链表、到期时间 */
   private[this] val root = new TimerTaskEntry(null, -1)
   root.next = root
   root.prev = root
-
   private[this] val expiration = new AtomicLong(-1L)
 
-  // Set the bucket's expiration time
-  // Returns true if the expiration time is changed
   def setExpiration(expirationMs: Long): Boolean = {
     expiration.getAndSet(expirationMs) != expirationMs
   }
-
-  // Get the bucket's expiration time
   def getExpiration: Long = expiration.get
 
   // Apply the supplied function to each of tasks in this list
@@ -99,10 +92,12 @@ private[timer] class TimerTaskList(taskCounter: AtomicInteger) extends Delayed {
     }
   }
 
+  @Override
   def getDelay(unit: TimeUnit): Long = {
     unit.convert(max(getExpiration - Time.SYSTEM.hiResClockMs, 0), TimeUnit.MILLISECONDS)
   }
 
+  @Override
   def compareTo(d: Delayed): Int = {
     val other = d.asInstanceOf[TimerTaskList]
     java.lang.Long.compare(getExpiration, other.getExpiration)
@@ -110,6 +105,7 @@ private[timer] class TimerTaskList(taskCounter: AtomicInteger) extends Delayed {
 
 }
 
+/** TimerTaskEntry */
 private[timer] class TimerTaskEntry(val timerTask: TimerTask, val expirationMs: Long) extends Ordered[TimerTaskEntry] {
 
   @volatile
@@ -117,9 +113,12 @@ private[timer] class TimerTaskEntry(val timerTask: TimerTask, val expirationMs: 
   var next: TimerTaskEntry = null
   var prev: TimerTaskEntry = null
 
-  // if this timerTask is already held by an existing timer task entry,
-  // setTimerTaskEntry will remove it.
   if (timerTask != null) timerTask.setTimerTaskEntry(this)
+
+  @Override
+  override def compare(that: TimerTaskEntry): Int = {
+    java.lang.Long.compare(expirationMs, that.expirationMs)
+  }
 
   def cancelled: Boolean = {
     timerTask.getTimerTaskEntry != this
@@ -136,8 +135,5 @@ private[timer] class TimerTaskEntry(val timerTask: TimerTask, val expirationMs: 
     }
   }
 
-  override def compare(that: TimerTaskEntry): Int = {
-    java.lang.Long.compare(expirationMs, that.expirationMs)
-  }
 }
 
